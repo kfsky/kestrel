@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -8,7 +7,6 @@ from kestrel.models.qwen35.qwen_model import (
     Qwen3_5Model,
     _copy_image_features_into_embeddings,
 )
-from kestrel.models.qwen35.runtime import Qwen35Runtime
 
 
 class _PackedVision(torch.nn.Module):
@@ -113,20 +111,18 @@ def test_direct_image_feature_copy_preserves_dtype_conversion_semantics() -> Non
 
 
 def test_multimodal_position_ids_return_ordered_packed_image_spans() -> None:
-    runtime = object.__new__(Qwen35Runtime)
-    runtime.architecture = SimpleNamespace(
-        vision_config=SimpleNamespace(spatial_merge_size=2)
-    )
+    from kestrel.models.qwen35.position_ids import fill_multimodal_position_ids
     token_types = np.asarray([0, 1, 1, 0, 1, 1, 1, 1, 0], dtype=np.int64)
     grid = np.asarray([[1, 2, 4], [1, 4, 4]], dtype=np.int64)
     position_ids = np.zeros((3, 1, 12), dtype=np.int64)
 
-    _, spans = runtime._fill_multimodal_position_ids(
+    _, spans = fill_multimodal_position_ids(
         position_ids,
         start=2,
         end=11,
         mm_token_type_ids=token_types,
         image_grid_thw=grid,
+        spatial_merge_size=2,
     )
 
     assert spans == ((3, 5), (6, 10))

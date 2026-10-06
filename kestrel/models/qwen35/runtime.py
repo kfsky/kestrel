@@ -26,6 +26,8 @@ from kestrel.runtime.preprocessing import (
 )
 from kestrel.runtime.uncached_paged import UncachedPagedRuntime
 
+from .position_ids import fill_multimodal_position_ids
+
 from .cache import (
     Qwen35InferenceCache,
     Qwen35LinearStatePool,
@@ -837,75 +839,6 @@ class Qwen35Runtime(UncachedPagedRuntime):
         positions = np.arange(end - start, dtype=np.int64)
         out[:, 0, start:end] = positions
 
-    def _fill_multimodal_position_ids(
-        self,
-        out: np.ndarray,
-        *,
-        start: int,
-        end: int,
-        mm_token_type_ids: np.ndarray,
-        image_grid_thw: np.ndarray,
-    ) -> tuple[int, tuple[tuple[int, int], ...]]:
-        spatial_merge_size = int(
-            self.architecture.vision_config.spatial_merge_size
-        )
-        cursor = start
-        current_pos = 0
-        image_idx = 0
-        image_token_spans: list[tuple[int, int]] = []
-        while cursor < end:
-            modality_type = int(mm_token_type_ids[cursor - start])
-            group_end = cursor + 1
-            while (
-                group_end < end
-                and int(mm_token_type_ids[group_end - start]) == modality_type
-            ):
-                group_end += 1
-
-            if modality_type == 0:
-                text_len = group_end - cursor
-                positions = np.arange(
-                    current_pos, current_pos + text_len, dtype=np.int64
-                )
-                out[:, 0, cursor:group_end] = positions
-                current_pos += text_len
-            elif modality_type == 1:
-                if image_idx >= image_grid_thw.shape[0]:
-                    raise RuntimeError("Qwen image grid metadata ended early")
-                grid_t, grid_h_raw, grid_w_raw = (
-                    int(v) for v in image_grid_thw[image_idx]
-                )
-                image_idx += 1
-                grid_h = grid_h_raw // spatial_merge_size
-                grid_w = grid_w_raw // spatial_merge_size
-                image_len = grid_t * grid_h * grid_w
-                if image_len != group_end - cursor:
-                    raise RuntimeError(
-                        "Qwen image token count does not match image grid: "
-                        f"tokens={group_end - cursor}, grid={image_len}"
-                    )
-                image_token_spans.append((cursor, group_end))
-                offset = current_pos
-                temporal = np.repeat(np.arange(grid_t, dtype=np.int64), grid_h * grid_w)
-                height = np.tile(
-                    np.repeat(np.arange(grid_h, dtype=np.int64), grid_w),
-                    grid_t,
-                )
-                width = np.tile(np.arange(grid_w, dtype=np.int64), grid_h * grid_t)
-                out[0, 0, cursor:group_end] = temporal + offset
-                out[1, 0, cursor:group_end] = height + offset
-                out[2, 0, cursor:group_end] = width + offset
-                current_pos += max(grid_h_raw, grid_w_raw) // spatial_merge_size
-            else:
-                raise NotImplementedError("Qwen packed prefill does not support video")
-
-            cursor = group_end
-
-        if image_idx != image_grid_thw.shape[0]:
-            raise RuntimeError("Qwen image grid metadata has unused rows")
-        rope_delta = int(out[:, 0, start:end].max()) + 1 - (end - start)
-        return rope_delta, tuple(image_token_spans)
-
     def _fill_vision_metadata(
         self,
         scratch: Qwen35PrefillScratch,
@@ -1155,12 +1088,13 @@ class Qwen35Runtime(UncachedPagedRuntime):
             else:
                 mm_types[ids_np == IMAGE_PAD_ID] = 1
                 assert grid_np is not None
-                rope_delta, row_image_token_spans = self._fill_multimodal_position_ids(
+                rope_delta, row_image_token_spans = fill_multimodal_position_ids(
                     scratch.text_meta.position_ids.np,
                     start=offset,
                     end=end,
                     mm_token_type_ids=mm_types,
                     image_grid_thw=grid_np,
+                    spatial_merge_size=self.architecture.vision_config.spatial_merge_size,
                 )
                 scratch.text_meta.rope_deltas.np[row, 0] = rope_delta
                 image_token_spans.extend(row_image_token_spans)
