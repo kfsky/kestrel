@@ -489,7 +489,9 @@ class ParakeetTdtRuntime:
         blocks = [audio.waveform for _request_index, audio in rows]
         staged = _stage_waveforms(blocks, self.device, pinned=self._pin_waveforms)
         features, masks = parakeet_cohort_features(
-            staged, [int(block.size) for block in blocks]
+            staged,
+            [int(block.size) for block in blocks],
+            num_mel_bins=self.model.config.encoder.num_mel_bins,
         )
         return features.to(self.dtype), masks
 

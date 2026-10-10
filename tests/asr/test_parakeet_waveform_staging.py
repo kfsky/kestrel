@@ -9,6 +9,8 @@ it with: the padded batch the cohort's single spectrogram runs on.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
@@ -80,6 +82,9 @@ def test_batch_features_match_the_pageable_upload() -> None:
     runtime = ParakeetTdtRuntime.__new__(ParakeetTdtRuntime)
     runtime.device = torch.device("cuda")
     runtime.dtype = torch.float32
+    runtime.model = SimpleNamespace(
+        config=SimpleNamespace(encoder=SimpleNamespace(num_mel_bins=128))
+    )
     rng = np.random.default_rng(7)
     rows = [
         (index, _audio(rng.standard_normal(size).astype(np.float32) * 0.1))

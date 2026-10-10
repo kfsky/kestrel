@@ -87,7 +87,9 @@ def head_speech(
         return [(0.0, duration)]
     weight = model.encoder.subsampling.linear.weight
     samples = torch.from_numpy(np.ascontiguousarray(waveform)).to(weight.device)
-    features, mask = parakeet_features(samples)
+    features, mask = parakeet_features(
+        samples, num_mel_bins=model.config.encoder.num_mel_bins
+    )
     probabilities, valid = model.speech_probabilities(features.to(weight.dtype), mask)
     frames = probabilities[0][valid[0]].float().cpu().numpy()
     return [

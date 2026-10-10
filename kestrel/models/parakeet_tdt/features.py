@@ -10,6 +10,10 @@ from kestrel.models.asr.features import mel_filters
 from torch import Tensor
 
 
+# Parakeet TDT 0.6B v3 and the checkpoints derived from it use 128 bands.
+DEFAULT_MEL_BINS = 128
+
+
 def _on_device(values: Sequence[int], device: torch.device) -> Tensor:
     """A small integer vector on ``device``, without draining the stream.
 
@@ -29,8 +33,13 @@ def _emphasise(samples: Tensor) -> Tensor:
     )
 
 
-def _log_mel(emphasised: Tensor) -> Tensor:
-    """Log-mel energies of a pre-emphasised batch, ``[rows, mel, frames]``."""
+def _log_mel(emphasised: Tensor, num_mel_bins: int) -> Tensor:
+    """Log-mel energies of a pre-emphasised batch, ``[rows, mel, frames]``.
+
+    ``num_mel_bins`` comes from the checkpoint's ``encoder_config``: the
+    subsampler's linear layer is sized for it, so a spectrogram with any other
+    band count cannot reach the encoder.
+    """
 
     spectrum = (
         torch.stft(
@@ -45,11 +54,13 @@ def _log_mel(emphasised: Tensor) -> Tensor:
         .abs()
         .square()
     )
-    mel = mel_filters(512, 128, 16_000, emphasised.device) @ spectrum
+    mel = mel_filters(512, num_mel_bins, 16_000, emphasised.device) @ spectrum
     return torch.log(mel + 2**-24)
 
 
-def parakeet_features(waveform: np.ndarray | Tensor) -> tuple[Tensor, Tensor]:
+def parakeet_features(
+    waveform: np.ndarray | Tensor, *, num_mel_bins: int = DEFAULT_MEL_BINS
+) -> tuple[Tensor, Tensor]:
     samples = torch.as_tensor(waveform, dtype=torch.float32)
     if samples.ndim not in (1, 2):
         raise ValueError("Parakeet audio must be one waveform or an equal-length batch")
@@ -59,7 +70,7 @@ def parakeet_features(waveform: np.ndarray | Tensor) -> tuple[Tensor, Tensor]:
         raise ValueError("Parakeet expects a non-empty audio batch")
     if samples.shape[-1] < 320:
         raise ValueError("Parakeet audio is too short to normalize")
-    features = _log_mel(_emphasise(samples)).transpose(1, 2)
+    features = _log_mel(_emphasise(samples), num_mel_bins).transpose(1, 2)
     valid_frames = samples.shape[1] // 160
     mask = torch.arange(features.shape[1], device=samples.device)[None] < valid_frames
     mask = mask.expand(samples.shape[0], -1)
@@ -71,7 +82,7 @@ def parakeet_features(waveform: np.ndarray | Tensor) -> tuple[Tensor, Tensor]:
 
 
 def parakeet_cohort_features(
-    waveforms: Tensor, sizes: Sequence[int]
+    waveforms: Tensor, sizes: Sequence[int], *, num_mel_bins: int = DEFAULT_MEL_BINS
 ) -> tuple[Tensor, Tensor]:
     """Features for a cohort of unequal waveforms, out of one spectrogram.
 
@@ -105,7 +116,9 @@ def parakeet_cohort_features(
     device = waveforms.device
     lengths = _on_device(sizes, device)
     inside = torch.arange(waveforms.shape[1], device=device)[None] < lengths[:, None]
-    energies = _log_mel(torch.where(inside, _emphasise(waveforms), 0.0))
+    energies = _log_mel(
+        torch.where(inside, _emphasise(waveforms), 0.0), num_mel_bins
+    )
 
     groups: dict[int, list[int]] = {}
     for row, size in enumerate(sizes):
@@ -134,4 +147,4 @@ def parakeet_cohort_features(
     return features.contiguous(), mask.contiguous()
 
 
-__all__ = ["parakeet_cohort_features", "parakeet_features"]
+__all__ = ["DEFAULT_MEL_BINS", "parakeet_cohort_features", "parakeet_features"]

@@ -65,7 +65,9 @@ def _runtime() -> ParakeetTdtRuntime:
     runtime.dtype = torch.float32
     runtime.compute_stream = None
     runtime.model = SimpleNamespace(
-        config=SimpleNamespace(encoder=SimpleNamespace(subsampling_factor=8)),
+        config=SimpleNamespace(
+            encoder=SimpleNamespace(subsampling_factor=8, num_mel_bins=128)
+        ),
         vad_head=None,
     )
     runtime.tokenizer = _Tokenizer()

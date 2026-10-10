@@ -118,3 +118,24 @@ def test_a_cohort_of_equal_rows_is_untouched_by_padding() -> None:
 
     assert torch.equal(features, expected_features)
     assert torch.equal(mask, expected_mask)
+
+
+def test_the_band_count_follows_the_request() -> None:
+    """A checkpoint trained on another band count gets that many bands."""
+    waveforms = _noise((8_000, 5_003))
+
+    default, _ = parakeet_features(torch.from_numpy(waveforms[0]))
+    narrow, _ = parakeet_features(torch.from_numpy(waveforms[0]), num_mel_bins=80)
+    cohort, mask = parakeet_cohort_features(
+        _padded(waveforms), [8_000, 5_003], num_mel_bins=80
+    )
+    single, single_mask = parakeet_features(
+        torch.from_numpy(waveforms[1]), num_mel_bins=80
+    )
+
+    assert default.shape[-1] == 128
+    assert narrow.shape[-1] == 80
+    assert cohort.shape[-1] == 80
+    frames = single.shape[1]
+    torch.testing.assert_close(cohort[1:, :frames], single, rtol=1e-5, atol=1e-5)
+    assert torch.equal(mask[1:, :frames], single_mask)

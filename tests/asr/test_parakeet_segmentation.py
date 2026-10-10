@@ -26,7 +26,7 @@ SAMPLE_RATE = 16_000
 BURST, GAP = 4.0, 0.5
 
 
-def _tiny_config() -> ParakeetTdtConfig:
+def _tiny_config(num_mel_bins: int = 128) -> ParakeetTdtConfig:
     config = ParakeetTdtConfig(
         encoder=ParakeetEncoderConfig(
             hidden_size=32,
@@ -34,7 +34,7 @@ def _tiny_config() -> ParakeetTdtConfig:
             num_hidden_layers=1,
             num_attention_heads=4,
             num_key_value_heads=4,
-            num_mel_bins=128,
+            num_mel_bins=num_mel_bins,
             conv_kernel_size=9,
             subsampling_conv_channels=8,
             subsampling_conv_kernel_size=3,
@@ -438,3 +438,38 @@ def test_runtime_picks_the_pause_source_from_the_loaded_weights() -> None:
 
     assert chosen.func is head_speech
     assert chosen.args == (runtime.model,)
+
+
+def test_a_checkpoint_on_80_bands_runs_its_own_band_count() -> None:
+    """The subsampler is sized by ``num_mel_bins``, so features must follow it.
+
+    A 128-band spectrogram cannot reach an 80-band subsampler: its linear layer
+    expects ``channels * 80 // 8`` inputs. Both the head and the runtime's
+    cohort features take the count from the loaded checkpoint.
+    """
+    from kestrel.models.asr.audio import DecodedAudio
+
+    torch.manual_seed(0)
+    model = ParakeetTdt(_tiny_config(num_mel_bins=80)).eval()
+    model.attach_vad_head()
+    waveform = _bursts(2)
+    with torch.no_grad():
+        model.vad_head.out.bias.fill_(20.0)
+
+    assert head_speech(model, waveform, SAMPLE_RATE) == [
+        (0.0, pytest.approx(waveform.size / SAMPLE_RATE, abs=0.1))
+    ]
+
+    runtime = ParakeetTdtRuntime.__new__(ParakeetTdtRuntime)
+    runtime.model = model
+    runtime.device = torch.device("cpu")
+    runtime.dtype = torch.float32
+    runtime._pin_waveforms = False
+    duration = waveform.size / SAMPLE_RATE
+    rows = [(0, DecodedAudio(waveform, duration, duration, 0.0))]
+    features, mask = runtime._batch_audio_features(rows)
+
+    assert features.shape[-1] == 80
+    with torch.inference_mode():
+        hidden, _ = model.encoder.subsampling(features, mask)
+    assert hidden.shape[-1] == model.config.encoder.hidden_size

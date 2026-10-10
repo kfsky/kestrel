@@ -115,7 +115,9 @@ def _runtime(vad_head=None):
     runtime.device = torch.device("cpu")
     runtime.dtype = torch.float32
     runtime.model = SimpleNamespace(
-        config=SimpleNamespace(encoder=SimpleNamespace(subsampling_factor=8)),
+        config=SimpleNamespace(
+            encoder=SimpleNamespace(subsampling_factor=8, num_mel_bins=128)
+        ),
         vad_head=vad_head,
     )
     runtime.tokenizer = _Tokenizer()
