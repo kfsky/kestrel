@@ -219,8 +219,11 @@ class _TdtBatchGeneratedDecoder:
         with torch.cuda.stream(self.compute_stream):
             valid_device = valid.sum(-1).to(dtype=torch.long)
             valid_lengths = valid_device.tolist()
+            # The generated kernel advances ``frame_indices`` on the device and
+            # has no per-frame cap; the host state mirrors it, so it must not
+            # apply one either or the two walks would part.
             state = _TdtBatchDecodeState.create(
-                self.model.config, valid_lengths, max_tokens
+                self.model.config, valid_lengths, max_tokens, per_frame_cap=False
             )
             active = state.active()
             if not any(active):

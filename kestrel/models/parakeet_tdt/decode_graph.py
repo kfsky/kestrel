@@ -29,6 +29,7 @@ _WALK = (
     "cursor",
     "step_tokens",
     "step_durations",
+    "steps_at_frame",
 )
 
 
@@ -47,6 +48,7 @@ class _TdtDecodeSlot:
     cursor: Tensor
     step_tokens: Tensor
     step_durations: Tensor
+    steps_at_frame: Tensor
 
 
 class _TdtBatchGraphDecoder:
@@ -191,8 +193,19 @@ class _TdtBatchGraphDecoder:
         advanced = slot.active[:batch_size].long()
         durations = self._durations[duration_indices]
         # A blank that would not advance the frame advances it by one, or the
-        # walk could never reach the end of the encoding.
-        durations = durations + ((token_ids == blank) & (durations == 0)).long()
+        # walk could never reach the end of the encoding. That is also where
+        # NeMo lands: it repeats the decision until its cap, then moves on one.
+        forced = (token_ids == blank) & (durations == 0)
+        durations = durations + forced.long()
+        # Count every decision at the row's frame and, at
+        # ``max_symbols_per_step``, advance one frame beyond the prediction, as
+        # NeMo's greedy TDT does; otherwise a symbol repeated at duration zero
+        # spends the row's whole budget on one frame.
+        at_frame = slot.steps_at_frame[:batch_size]
+        at_frame.add_(advanced)
+        capped = (at_frame >= self.model.config.max_symbols_per_step) & ~forced
+        durations = durations + capped.long()
+        at_frame.mul_((durations == 0).long() * advanced)
         slot.step_tokens[:batch_size].copy_(token_ids)
         slot.step_durations[:batch_size].copy_(durations)
         slot.frames[:batch_size].add_(durations * advanced)
@@ -253,6 +266,7 @@ class _TdtBatchGraphDecoder:
             1 << 40 if max_tokens is None else max_tokens
         )
         slot.cursor[:batch].fill_(1)  # column zero holds the leading blank
+        slot.steps_at_frame.zero_()
         slot.active.zero_()
         self._walks_on(slot, batch)
 

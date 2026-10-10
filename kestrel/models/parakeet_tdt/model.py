@@ -468,6 +468,26 @@ class TdtOutput:
     encoder_frame_seconds: float = 0.08
 
 
+def _per_frame_cap(duration: int, steps_at_frame: int, cap: int) -> tuple[int, int]:
+    """Count the decisions taken at one frame and move on at ``cap``, as NeMo does.
+
+    NeMo's greedy TDT counts every decision at a frame -- the last one, whose
+    duration leaves the frame, included -- and once the count reaches
+    ``max_symbols`` it advances one frame beyond the predicted duration.
+    Without the cap, a checkpoint that keeps predicting a symbol at duration
+    zero spends the whole ``max_symbols_per_step * frames`` budget on one
+    frame and never reaches the rest of the audio. Returns the duration to
+    apply and the updated count of decisions taken at the current frame.
+    """
+
+    steps_at_frame += 1
+    if steps_at_frame >= cap:
+        return duration + 1, 0
+    if duration > 0:
+        return duration, 0
+    return 0, steps_at_frame
+
+
 @dataclass(slots=True)
 class _TdtBatchDecodeState:
     config: ParakeetTdtConfig
@@ -477,6 +497,11 @@ class _TdtBatchDecodeState:
     tokens_remaining: list[int | None]
     sequences: list[list[int]]
     durations: list[list[int]]
+    # Consecutive decisions taken without leaving the current frame.
+    steps_at_frame: list[int]
+    # False only where a kernel walks the frames on the device and this state
+    # merely mirrors it (the generated decoder), so it must count as it does.
+    per_frame_cap: bool = True
 
     @classmethod
     def create(
@@ -484,6 +509,8 @@ class _TdtBatchDecodeState:
         config: ParakeetTdtConfig,
         valid_lengths: list[int],
         max_tokens: int | None,
+        *,
+        per_frame_cap: bool = True,
     ) -> _TdtBatchDecodeState:
         batch = len(valid_lengths)
         return cls(
@@ -496,6 +523,8 @@ class _TdtBatchDecodeState:
             tokens_remaining=[max_tokens] * batch,
             sequences=[[config.blank_token_id] for _ in range(batch)],
             durations=[[0] for _ in range(batch)],
+            steps_at_frame=[0] * batch,
+            per_frame_cap=per_frame_cap,
         )
 
     def active(self) -> list[bool]:
@@ -526,7 +555,15 @@ class _TdtBatchDecodeState:
                 continue
             duration = self.config.durations[duration_index]
             if token_id == self.config.blank_token_id and duration == 0:
-                duration = 1
+                # NeMo repeats this decision until its cap and then advances
+                # one frame, which is where this lands at once.
+                duration, self.steps_at_frame[index] = 1, 0
+            elif self.per_frame_cap:
+                duration, self.steps_at_frame[index] = _per_frame_cap(
+                    duration,
+                    self.steps_at_frame[index],
+                    self.config.max_symbols_per_step,
+                )
             self.sequences[index].append(token_id)
             self.durations[index].append(duration)
             self.frames[index] += duration
@@ -690,6 +727,7 @@ class ParakeetTdt(nn.Module):
         sequences = [self.config.blank_token_id]
         durations = [min(carry, end_frame - start_frame)]
         steps_remaining = self.config.max_symbols_per_step * (end_frame - start_frame)
+        steps_at_frame = 0
         tokens_remaining = max_tokens
         greedy_step = get_runtime(encoded.device).tdt.greedy_step
         while (
@@ -704,7 +742,13 @@ class ParakeetTdt(nn.Module):
             token_id, duration_index = greedy_step(logits, self.config.vocab_size)
             duration = self.config.durations[duration_index]
             if token_id == self.config.blank_token_id and duration == 0:
-                duration = 1
+                # NeMo repeats this decision until its cap and then advances
+                # one frame, which is where this lands at once.
+                duration, steps_at_frame = 1, 0
+            else:
+                duration, steps_at_frame = _per_frame_cap(
+                    duration, steps_at_frame, self.config.max_symbols_per_step
+                )
             sequences.append(token_id)
             durations.append(duration)
             frame += duration
